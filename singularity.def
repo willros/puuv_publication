@@ -1,0 +1,20 @@
+Bootstrap: docker
+From: mambaorg/micromamba
+
+%files
+    ./env.yaml /env.yaml
+
+%environment
+    MAMBA_DOCKERFILE_ACTIVATE=1
+    export PATH=$PATH:/opt/conda/bin
+
+%post
+    apt-get update -y
+    apt-get install perl -y
+    micromamba install -y -n base -f /env.yaml
+    micromamba clean --all --yes
+    
+%runscript
+    echo "Singularity virushanter image. Run with: singularity exec <image.sif> snakemake -c <cores> -s Snakefile"
+
+

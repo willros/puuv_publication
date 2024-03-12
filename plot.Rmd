@@ -1,0 +1,208 @@
+```{r}
+library(tidyverse)
+library(ggthemes)
+library(ggpubr)
+library(cowplot)
+library(extrafont)
+library(officer)
+```
+
+
+```{r}
+
+mpileup <- read_csv("") 
+idxstat <- read_csv("") 
+
+coverage_info <- read_csv("") %>%
+  select(sample_name:kaiju_virus_percent) %>%
+  select(-read_len) %>%
+  mutate(kraken_virus_percent = kraken_virus_percent / 100) %>%
+  mutate(kaiju_virus_percent = kaiju_virus_percent / 100) %>%
+  mutate(sample_name = str_extract(sample_name, "(.*?)_", group = 1)) %>%
+  rename(alias = sample_name)
+
+sample_date_segment <- read_tsv("") %>%
+  mutate(
+    kind = case_when(
+      alias %in% c("sample29", "sample8", "sample7") ~ "patient",
+      str_detect(alias, "sork") ~ "vole",
+      .default = "isolate"
+    )
+  )
+
+```
+
+```{r}
+idxstat <- idxstat %>%
+  rename(alias = sample) %>%
+  rename(mapped_to_segment = mapped,
+         total_mapped_to_segment = total_mapped,
+         percent_mapped_to_segment = percent_mapped) %>%
+  inner_join(sample_date_segment) %>%
+  inner_join(coverage_info)
+```
+
+## The table for the manuscript
+```{r}
+
+manuscript_table <- idxstat %>%
+  select(sample, segment, kind, number_reads, mapped_to_segment, percent_mapped_to_segment, mapped_to_human_percent, mapped_to_virus_percent, kraken_virus_percent, kaiju_virus_percent, date) %>%
+  rename(mapped_to_host_percent = mapped_to_human_percent) %>%
+  mutate(reads_mapped_to_host = round(number_reads * mapped_to_host_percent)) %>%
+  group_by(sample, date) %>%
+  mutate(total_mapped_to_segment = sum(mapped_to_segment)) %>%
+  ungroup() %>%
+  mutate(across(where(is.numeric), \(x) round(x, 4))) %>%
+  select(-percent_mapped_to_segment) %>%
+  mutate(percent_mapped_to_segment = mapped_to_segment / number_reads) %>%
+  #mutate(percent_mapped_to_segment_total = total_mapped_to_segment / number_reads) %>%
+  mutate(segment = fct_relevel(segment, c("S", "M", "L"))) %>%
+  #mutate(segment = fct_rev(segment)) %>%
+  mutate(across(where(is.numeric), \(x) round(x, 4))) %>%
+  arrange(kind, sample, segment, date) 
+
+# calulcate overall mapped per isolate and segment 
+manuscript_table %>%
+  group_by(kind, segment) %>%
+  summarise(mean_segment = mean(percent_mapped_to_segment)) %>%
+  mutate(across(where(is.numeric), scales::percent_format())) %>%
+  view
+
+# per segment 
+manuscript_table %>%
+  group_by(segment) %>%
+  summarise(mean_segment = mean(percent_mapped_to_segment)) %>%
+  mutate(across(where(is.numeric), scales::percent_format())) %>%
+  view
+
+# per kind
+manuscript_table %>%
+  group_by(kind) %>%
+  summarise(mean_segment = mean(percent_mapped_to_segment)) %>%
+  mutate(across(where(is.numeric), scales::percent_format())) %>%
+  view
+
+manuscript_table %>%
+  filter(kind == "vole") %>%
+  arrange(kaiju_virus_percent) %>%
+  mutate(across(contains("percent"), scales::percent_format())) 
+```
+
+```{r}
+manuscript_table %>%
+  pivot_longer(c(kaiju_virus_percent, kraken_virus_percent, mapped_to_virus_percent)) %>%
+  ggplot(aes(percent_mapped_to_segment_total, value, color = name, shape = as.factor(date))) +
+  facet_wrap(~name) +
+  geom_point() +
+  scale_y_continuous(labels = scales::percent_format()) +
+  scale_x_continuous(labels = scales::percent_format()) +
+  labs(
+    y = "Percent classified as virus by program",
+    x = "Percent of reads mapped to either S, M or L segment (Total)",
+    shape = "Date"
+  )
+
+
+alignment_overlap <- manuscript_table %>%
+  ggplot(aes(mapped_to_host_percent, mapped_to_virus_percent, color = kind, shape = as.factor(date))) +
+  geom_point() +
+  scale_x_continuous(labels = scales::percent_format()) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(
+    y = "% reads aligned to virus databse",
+    x = "% reads aligned to human reference",
+    shape = "Run",
+    color = "Sample type"
+  )
+```
+
+```{r}
+mpileup <- mpileup %>%
+  mutate(sample = if_else(sample == "sample5_aka_sample_08", "sample05", sample)) %>%
+  mutate(sample = if_else(sample == "230607_sample8", "sample8", sample)) %>%
+  mutate(sample = if_else(sample == "230609_sample29", "sample29", sample)) %>%
+  rename(alias = sample) %>%
+  inner_join(sample_date_segment %>% select(alias, sample, kind))
+```
+
+# COVERAGE PLOTS AND SEGMENT PLOTS
+```{r}
+plot_mpileup <- function(tbl) {
+  tbl %>%
+    mutate(segment = fct_relevel(segment, c("S", "M", "L"))) %>%
+    ggplot(aes(pos,rolling_mean, color = segment)) +
+    geom_line() +
+    theme_pubclean() +
+    labs(
+        x = "Position (nt)",
+        y = "Coverage (x per nt)"
+    ) +
+    scale_color_manual(values=c("#CCCCCC", "#888888", "#333333")) +
+    facet_grid(
+      rows = vars(sample),
+      cols = vars(segment),
+      switch = "y",
+      scales = "free"
+    ) +
+    theme(
+        legend.position = 'none', 
+        strip.placement = "outside",
+        panel.border = element_rect(color = "#999999", fill = NA, size = 0.5)
+    ) 
+  
+}
+
+coverage_vole_patient <- mpileup %>%
+  filter(kind %in% c("patient", "vole")) %>%
+  plot_mpileup() 
+
+
+coverage_isolate <- mpileup %>%
+  filter(kind == "isolate") %>%
+  plot_mpileup 
+
+
+plot_grid(
+  coverage_vole_patient, 
+  coverage_isolate, 
+  labels = c('A', 'B')
+)
+```
+
+
+```{r}
+
+plot_idxstat <- function(tbl) {
+  tbl %>%
+    mutate(segment = fct_relevel(segment, c("S", "M", "L"))) %>%
+    ggplot(aes(segment, percent_mapped_to_segment, fill = segment)) +
+    geom_col(width = 0.7) +
+    facet_wrap(~sample, ncol = 3) +
+    labs(
+        x = "Segment",
+        y = "Percent of reads mapping"
+    ) +
+    expand_limits(y = 0.8) +
+    scale_fill_manual(values=c("#CCCCCC", "#888888", "#333333")) +
+    scale_y_continuous(labels = scales::percent_format()) +
+    theme_pubclean() +
+    theme(
+        legend.position = 'bottom', 
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        panel.border = element_rect(color = "#999999", fill = NA, size = 0.5)
+    ) 
+}
+
+idxstat_isolate <- idxstat %>%
+  filter(kind == "isolate") %>%
+  plot_idxstat()
+
+idxstat_patient_vole <- idxstat %>%
+  filter(kind %in% c("patient", "vole")) %>%
+  plot_idxstat()
+
+plot_grid(idxstat_patient_vole, idxstat_isolate, labels = c('A', 'B'))
+
+ggsave("idxstats_all.pdf", last_plot(), width = 15)
+```
